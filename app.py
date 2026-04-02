@@ -5,88 +5,117 @@ import uuid
 import base64
 import shutil
 import yaml
+import bcrypt
 from datetime import datetime
 import anthropic
 import streamlit as st
-import streamlit_authenticator as stauth
 import pdfplumber
 from dotenv import load_dotenv
 
 load_dotenv()
 
-MODEL        = "claude-opus-4-6"
-api_key      = os.getenv("ANTHROPIC_API_KEY", "")
-APP_DIR      = os.path.dirname(__file__)
-AUTH_CONFIG  = os.path.join(APP_DIR, "auth_config.yaml")
-
-# ── Auth config bootstrap ─────────────────────────────────────────────────────
-
-def load_auth_config():
-    if not os.path.isfile(AUTH_CONFIG):
-        return {"credentials": {"usernames": {}},
-                "cookie": {"name": "permitfix_auth",
-                           "key": "permitfix_secret_" + uuid.uuid4().hex,
-                           "expiry_days": 30}}
-    with open(AUTH_CONFIG) as f:
-        return yaml.safe_load(f)
-
-def save_auth_config(config):
-    with open(AUTH_CONFIG, "w") as f:
-        yaml.dump(config, f, default_flow_style=False)
-
-config = load_auth_config()
-
-# ── Authenticator setup ───────────────────────────────────────────────────────
-
-authenticator = stauth.Authenticate(
-    config["credentials"],
-    config["cookie"]["name"],
-    config["cookie"]["key"],
-    config["cookie"]["expiry_days"],
-)
-
-# ── Login / Register gate ─────────────────────────────────────────────────────
+MODEL       = "claude-opus-4-6"
+api_key     = os.getenv("ANTHROPIC_API_KEY", "")
+APP_DIR     = os.path.dirname(__file__)
+AUTH_FILE   = os.path.join(APP_DIR, "auth_config.yaml")
 
 st.set_page_config(page_title="PermitFix AI", page_icon="🏗️", layout="wide")
 
-no_users = not config["credentials"]["usernames"]
+# Hide "Press Enter to submit form" hints
+st.markdown(
+    "<style>[data-testid='InputInstructions'] { display: none !important; }</style>",
+    unsafe_allow_html=True,
+)
 
-def register_widget(label="Register"):
-    try:
-        result = authenticator.register_user(captcha=False)
-        if result and result[1]:
-            save_auth_config(config)
-            return True
-    except Exception as e:
-        st.error(f"Registration error: {e}")
-    return False
+# ── User storage ──────────────────────────────────────────────────────────────
 
-if no_users:
+def load_users():
+    if not os.path.isfile(AUTH_FILE):
+        return {}
+    with open(AUTH_FILE) as f:
+        return yaml.safe_load(f) or {}
+
+def save_users(users):
+    with open(AUTH_FILE, "w") as f:
+        yaml.dump(users, f, default_flow_style=False)
+
+def hash_pw(password):
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+
+def verify_pw(password, hashed):
+    return bcrypt.checkpw(password.encode(), hashed.encode())
+
+# ── Session helpers ───────────────────────────────────────────────────────────
+
+def is_logged_in():
+    return st.session_state.get("auth_user") is not None
+
+def do_login(email, display_name):
+    st.session_state["auth_user"] = email
+    st.session_state["auth_name"] = display_name
+
+def do_logout():
+    st.session_state["auth_user"] = None
+    st.session_state["auth_name"] = None
+    st.session_state["view"]      = "home"
+
+# ── Auth gate ─────────────────────────────────────────────────────────────────
+
+if not is_logged_in():
+    users = load_users()
+
     st.title("🏗️ PermitFix AI")
-    st.subheader("Create the first account to get started")
-    if register_widget():
-        st.success("Account created! Please log in.")
-        st.rerun()
+    st.caption("Building permit & compliance assistant")
+    st.divider()
+
+    tab_login, tab_register = st.tabs(["Sign In", "Create Account"])
+
+    with tab_login:
+        with st.form("login_form", clear_on_submit=False):
+            email_in    = st.text_input("Email")
+            password_in = st.text_input("Password", type="password")
+            submitted   = st.form_submit_button("Sign In", type="primary",
+                                                use_container_width=True)
+        if submitted:
+            email_in = email_in.strip().lower()
+            user = users.get(email_in)
+            if user and verify_pw(password_in, user["password_hash"]):
+                do_login(email_in, user["name"])
+                st.rerun()
+            else:
+                st.error("Incorrect email or password.")
+
+    with tab_register:
+        with st.form("register_form", clear_on_submit=True):
+            reg_name     = st.text_input("Full Name")
+            reg_email    = st.text_input("Email")
+            reg_password = st.text_input("Password", type="password")
+            reg_confirm  = st.text_input("Confirm Password", type="password")
+            reg_submit   = st.form_submit_button("Create Account", type="primary",
+                                                  use_container_width=True)
+        if reg_submit:
+            reg_email = reg_email.strip().lower()
+            if not reg_name.strip() or not reg_email or not reg_password:
+                st.error("All fields are required.")
+            elif reg_password != reg_confirm:
+                st.error("Passwords do not match.")
+            elif reg_email in users:
+                st.error("An account with this email already exists.")
+            else:
+                users[reg_email] = {
+                    "name": reg_name.strip(),
+                    "password_hash": hash_pw(reg_password),
+                }
+                save_users(users)
+                do_login(reg_email, reg_name.strip())
+                st.rerun()
+
     st.stop()
 
-# Show login form
-login_result = authenticator.login(captcha=False)
-name, auth_status, username = (login_result or (None, None, None))
+# ── Logged in ─────────────────────────────────────────────────────────────────
+username = st.session_state["auth_user"]
+name     = st.session_state["auth_name"]
 
-if auth_status is False:
-    st.error("Incorrect username or password.")
-    st.stop()
-
-if auth_status is None:
-    st.title("🏗️ PermitFix AI")
-    st.caption("Sign in to access your projects.")
-    with st.expander("Don't have an account? Register here"):
-        if register_widget():
-            st.success("Account created! Please log in above.")
-            st.rerun()
-    st.stop()
-
-# ── Logged in — scope projects to this user ───────────────────────────────────
 PROJECTS_DIR = os.path.join(APP_DIR, "projects", username)
 IMAGE_TYPES  = ["png", "jpg", "jpeg", "webp", "gif"]
 MEDIA_TYPE_MAP = {
@@ -403,7 +432,9 @@ if st.session_state.view == "home":
 
     st.divider()
     st.caption(f"Signed in as **{name}**")
-    authenticator.logout("Sign Out")
+    if st.button("Sign Out", use_container_width=True):
+        do_logout()
+        st.rerun()
 
 # ═════════════════════════════════════════════════════════════════════════════
 # PROJECT VIEW
@@ -504,7 +535,9 @@ else:
 
         st.divider()
         st.caption(f"Signed in as **{name}**")
-        authenticator.logout("Sign Out")
+        if st.button("Sign Out", key="signout_sidebar", use_container_width=True):
+            do_logout()
+            st.rerun()
 
     # ── Tabs ──────────────────────────────────────────────────────────────────
     tab_dash, tab_chat = st.tabs(["📋 Plans Dashboard", "💬 Chat"])
