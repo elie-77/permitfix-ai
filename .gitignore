@@ -1,0 +1,23 @@
+# Environment & secrets
+.env
+auth_config.yaml
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# User data
+projects/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+
+# macOS
+.DS_Store
+
+# Streamlit
+.streamlit/secrets.toml

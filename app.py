@@ -51,21 +51,27 @@ st.set_page_config(page_title="PermitFix AI", page_icon="🏗️", layout="wide"
 
 no_users = not config["credentials"]["usernames"]
 
+def register_widget(label="Register"):
+    try:
+        result = authenticator.register_user(captcha=False)
+        if result and result[1]:
+            save_auth_config(config)
+            return True
+    except Exception as e:
+        st.error(f"Registration error: {e}")
+    return False
+
 if no_users:
     st.title("🏗️ PermitFix AI")
     st.subheader("Create the first account to get started")
-    try:
-        reg_result = authenticator.register_user(pre_authorization=False)
-        if reg_result and reg_result[1]:
-            save_auth_config(config)
-            st.success("Account created! Please log in.")
-            st.rerun()
-    except Exception as e:
-        st.error(f"Registration error: {e}")
+    if register_widget():
+        st.success("Account created! Please log in.")
+        st.rerun()
     st.stop()
 
 # Show login form
-name, auth_status, username = authenticator.login()
+login_result = authenticator.login(captcha=False)
+name, auth_status, username = (login_result or (None, None, None))
 
 if auth_status is False:
     st.error("Incorrect username or password.")
@@ -74,16 +80,10 @@ if auth_status is False:
 if auth_status is None:
     st.title("🏗️ PermitFix AI")
     st.caption("Sign in to access your projects.")
-
     with st.expander("Don't have an account? Register here"):
-        try:
-            reg_result = authenticator.register_user(pre_authorization=False)
-            if reg_result and reg_result[1]:
-                save_auth_config(config)
-                st.success("Account created! Please log in above.")
-                st.rerun()
-        except Exception as e:
-            st.error(f"Registration error: {e}")
+        if register_widget():
+            st.success("Account created! Please log in above.")
+            st.rerun()
     st.stop()
 
 # ── Logged in — scope projects to this user ───────────────────────────────────
@@ -96,8 +96,6 @@ MEDIA_TYPE_MAP = {
 STATUSES = ["🔵 In Review", "🟡 Corrections Needed", "🟢 Approved", "⚫ On Hold"]
 
 os.makedirs(PROJECTS_DIR, exist_ok=True)
-
-st.set_page_config(page_title="PermitFix AI", page_icon="🏗️", layout="wide")
 
 # ── Persistence helpers ───────────────────────────────────────────────────────
 
